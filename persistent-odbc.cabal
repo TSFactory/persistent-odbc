@@ -58,7 +58,7 @@ library
 
   if flag(tester)
                     hs-source-dirs: examples
-                    exposed-modules: TestODBC
+                    exposed-modules: Main
                                    , FtypeEnum
                                    , Employment
                     build-depends: blaze-html
@@ -86,7 +86,7 @@ Executable TestODBC
                     , bytestring    >= 0.9        && < 0.11
   else
       buildable: False
-  Main-Is:         TestODBC.hs
+  Main-Is:         Main.hs
   Hs-Source-Dirs:  examples
   Other-Modules:   FtypeEnum, Employment,Test1
 

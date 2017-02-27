@@ -5,7 +5,7 @@
 {-# LANGUAGE CPP #-}
 -- | A Sqlite backend for @persistent@.
 module Database.Persist.MigrateSqlite
-    ( getMigrationStrategy 
+    ( getMigrationStrategy
     ) where
 
 import Data.List (intercalate)
@@ -21,11 +21,12 @@ import Data.Acquire (with)
 import Data.Monoid ((<>))
 
 getMigrationStrategy :: DBType -> MigrationStrategy
-getMigrationStrategy dbtype@Sqlite { sqlite3619 = _fksupport } = 
+getMigrationStrategy dbtype@Sqlite { sqlite3619 = _fksupport } =
      MigrationStrategy
-                          { dbmsLimitOffset=decorateSQLWithLimitOffset "LIMIT -1" 
+                          { dbmsLimitOffset=decorateSQLWithLimitOffset "LIMIT -1"
                            ,dbmsMigrate=migrate'
                            ,dbmsInsertSql=insertSql'
+                           ,dbmsUpsertSql=Nothing
                            ,dbmsEscape=escape
                            ,dbmsType=dbtype
                           }
@@ -34,7 +35,7 @@ getMigrationStrategy dbtype = error $ "Sqlite: calling with invalid dbtype " ++ 
 insertSql' :: EntityDef -> [PersistValue] -> InsertSqlResult
 insertSql' ent vals =
   case entityPrimary ent of
-    Just _ -> 
+    Just _ ->
       ISRManyKeys sql vals
         where sql = pack $ concat
                 [ "INSERT INTO "
@@ -198,7 +199,7 @@ mkCreateTable isTemp entity (cols, uniqs) =
         , T.concat $ map sqlUnique uniqs
         , ")"
         ]
-                                        
+
 mayDefault :: Maybe Text -> Text
 mayDefault def = case def of
     Nothing -> ""
