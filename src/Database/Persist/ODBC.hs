@@ -144,6 +144,7 @@ openSimpleConn logFunc mdbtype conn = do
         , connNoLimit       = "" -- esqueleto uses this but needs to use connLimitOffset then we can dump this field
         , connRDBMS         = T.pack $ show (dbmsType mig)
         , connLimitOffset   = dbmsLimitOffset mig
+        , connMaxParams     = Nothing
         }
 -- | Choose the migration strategy based on the user provided database type
 getMigrationStrategy::DBType -> MigrationStrategy
