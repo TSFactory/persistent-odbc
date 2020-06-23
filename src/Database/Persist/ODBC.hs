@@ -1,8 +1,10 @@
+{-# OPTIONS -Wall #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiParamTypeClasses, ScopedTypeVariables #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 -- | An ODBC backend for persistent.
 module Database.Persist.ODBC
     ( withODBCPool
@@ -33,6 +35,7 @@ import qualified Database.HDBC.SqlValue as HSV
 import qualified Data.Convertible as DC
 
 import Control.Monad.IO.Class (MonadIO (..))
+import Control.Monad.Trans.Resource (MonadUnliftIO)
 import Data.IORef(newIORef)
 import qualified Data.Map as Map
 import qualified Data.Text as T
@@ -40,7 +43,6 @@ import Data.Time.LocalTime (localTimeToUTC, utc)
 import Data.Text (Text)
 import Data.Aeson -- (Object(..), (.:))
 import Control.Monad (mzero)
-import Control.Monad.Trans.Control (MonadBaseControl)
 --import Control.Monad.Trans.Resource (MonadResource)
 import Control.Monad.Logger
 
@@ -58,7 +60,7 @@ type ConnectionString = String
 -- finishes using it.  Note that you should not use the given
 -- 'ConnectionPool' outside the action since it may be already
 -- been released.
-withODBCPool :: (MonadBaseControl IO m, MonadLogger m, MonadIO m)
+withODBCPool :: (MonadUnliftIO m, MonadLogger m)
              => Maybe DBType
              -> ConnectionString
              -- ^ Connection string to the database.
@@ -76,7 +78,7 @@ withODBCPool dbt ci = withSqlPool (\lg -> open' lg dbt ci)
 -- responsibility to properly close the connection pool when
 -- unneeded.  Use 'withODBCPool' for an automatic resource
 -- control.
-createODBCPool :: (MonadLogger m, MonadIO m, MonadBaseControl IO m)
+createODBCPool :: (MonadUnliftIO m, MonadLogger m)
                => Maybe DBType
                -> ConnectionString
                -- ^ Connection string to the database.
@@ -88,7 +90,7 @@ createODBCPool dbt ci = createSqlPool (\lg -> open' lg dbt ci)
 
 -- | Same as 'withODBCPool', but instead of opening a pool
 -- of connections, only one connection is opened.
-withODBCConn :: (MonadLogger m, MonadIO m, MonadBaseControl IO m)
+withODBCConn :: (MonadUnliftIO m, MonadLogger m)
              => Maybe DBType -> ConnectionString -> (SqlBackend -> m a) -> m a
 withODBCConn dbt cs = withSqlConn (\lg -> open' lg dbt cs)
 
@@ -131,10 +133,11 @@ openSimpleConn logFunc mdbtype conn = do
         , connStmtMap       = smap
         , connInsertSql     = dbmsInsertSql mig
         , connInsertManySql = Nothing
-        , connUpsertSql     = dbmsUpsertSql mig
+        , connRepsertManySql = Nothing
+        , connUpsertSql     = Nothing --- XXX sloppy merge, diverges from upstream, but ours doesn't compile
         , connClose         = O.disconnect conn
         , connMigrateSql    = dbmsMigrate mig
-        , connBegin         = const
+        , connBegin         = (const . const)
                      $ E.catch (O.commit conn) (\(_ :: E.SomeException) -> return ())
             -- there is no nested transactions.
             -- Transaction begining means that previous commited
@@ -145,9 +148,10 @@ openSimpleConn logFunc mdbtype conn = do
         , connRDBMS         = T.pack $ show (dbmsType mig)
         , connLimitOffset   = dbmsLimitOffset mig
         , connMaxParams     = Nothing
+        , connPutManySql     = Nothing
         }
 -- | Choose the migration strategy based on the user provided database type
-getMigrationStrategy::DBType -> MigrationStrategy
+getMigrationStrategy :: DBType -> MigrationStrategy
 getMigrationStrategy dbtype =
   case dbtype of
     Postgres  -> PG.getMigrationStrategy dbtype
@@ -177,7 +181,7 @@ execute' query vals = fmap fromInteger $ O.execute query $ map (HSV.toSql . P) v
 withStmt' :: MonadIO m
           => O.Statement
           -> [PersistValue]
-          -> Acquire (Source m [PersistValue])
+          -> Acquire (ConduitT () [PersistValue] m ())
 withStmt' stmt vals = do
 #if DEBUG
     liftIO $ putStrLn $ "withStmt': vals: " ++ show vals
@@ -201,7 +205,7 @@ withStmt' stmt vals = do
               )
               mr
 
--- | Information required to connect to a PostgreSQL database
+-- | Information required to connect to an ODBC database
 -- using @persistent@'s generic facilities.  These values are the
 -- same that are given to 'withODBCPool'.
 data OdbcConf = OdbcConf
@@ -234,7 +238,7 @@ instance DC.Convertible P HSV.SqlValue where
     safeConvert (P (PersistText t))             = Right $ HSV.toSql t
     safeConvert (P (PersistByteString bs))      = Right $ HSV.toSql bs
     safeConvert (P (PersistInt64 i))            = Right $ HSV.toSql i
-    safeConvert (P (PersistRational r))         = Right $ HSV.toSql (fromRational r::Double)
+    safeConvert (P (PersistRational r))         = Right $ HSV.toSql (fromRational r :: Double)
     safeConvert (P (PersistDouble d))           = Right $ HSV.toSql d
     safeConvert (P (PersistBool b))             = Right $ HSV.SqlInteger (if b then 1 else 0)
     safeConvert (P (PersistDay d))              = Right $ HSV.toSql d

@@ -5,9 +5,9 @@ import Data.Text (Text)
 import Database.Persist.Sql
 
 -- | List of DBMS that are supported
-data DBType = MySQL | Postgres | MSSQL { mssql2012::Bool} | Oracle { oracle12c::Bool } | DB2 | Sqlite { sqlite3619::Bool } deriving (Show,Read)
+data DBType = MySQL | Postgres | MSSQL { mssql2012 :: Bool} | Oracle { oracle12c :: Bool } | DB2 | Sqlite { sqlite3619 :: Bool } deriving (Show,Read)
 
-mysql,postgres,mssqlMin2012,mssql,oracleMin12c,oracle,db2,sqlite,sqliteMin3619::DBType
+mysql,postgres,mssqlMin2012,mssql,oracleMin12c,oracle,db2,sqlite,sqliteMin3619 :: DBType
 mysql = MySQL
 postgres = Postgres
 mssqlMin2012 = MSSQL True

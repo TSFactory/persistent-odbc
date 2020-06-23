@@ -1,9 +1,11 @@
+{-# OPTIONS -Wall #-}
 {-# LANGUAGE EmptyDataDecls    #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiParamTypeClasses, ScopedTypeVariables #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 -- | An ODBC backend for persistent.
 module Database.Persist.MigratePostgres
     ( getMigrationStrategy
@@ -11,7 +13,6 @@ module Database.Persist.MigratePostgres
 
 import Database.Persist.Sql
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad.Trans.Resource (runResourceT)
 import qualified Data.Text as T
 import Data.Text (pack,Text)
 
@@ -19,7 +20,7 @@ import Data.Either (partitionEithers)
 import Control.Arrow
 import Data.List (find, intercalate, sort, groupBy)
 import Data.Function (on)
-import Data.Conduit
+import Data.Conduit (connect, (.|))
 import qualified Data.Conduit.List as CL
 import Data.Maybe (mapMaybe)
 
@@ -30,10 +31,10 @@ import Data.Acquire (with)
 
 #if DEBUG
 import Debug.Trace
-tracex::String -> a -> a
+tracex :: String -> a -> a
 tracex = trace
 #else
-tracex::String -> a -> a
+tracex :: String -> a -> a
 tracex _ b = b
 #endif
 
@@ -129,7 +130,7 @@ getColumns getter def = do
             [ PersistText $ unDBName $ entityDB def
             , PersistText $ unDBName $ fieldDB $ entityId def
             ]
-    cs <- with (stmtQuery stmt vals) ($$ helperClmns)
+    cs <- with (stmtQuery stmt vals) (`connect` helperClmns)
     let sqlc=concat ["SELECT "
                           ,"c.constraint_name, "
                           ,"c.column_name "
@@ -149,7 +150,7 @@ getColumns getter def = do
 
     stmt' <- getter $ pack sqlc
 
-    us <- with (stmtQuery stmt' vals) ($$ helperU)
+    us <- with (stmtQuery stmt' vals) (`connect` helperU)
     liftIO $ putStrLn $ "\n\ngetColumns cs="++show cs++"\n\nus="++show us
     return $ cs ++ us
   where
@@ -165,7 +166,7 @@ getColumns getter def = do
         return $ map (Right . Right . (DBName . fst . head &&& map (DBName . snd)))
                $ groupBy ((==) `on` fst) rows
 
-    helperClmns = CL.mapM getIt =$ CL.consume
+    helperClmns = CL.mapM getIt .| CL.consume
         where
           getIt = fmap (either Left (Right . Left)) .
                   liftIO .
@@ -275,7 +276,7 @@ getColumn getter tname [PersistByteString x, PersistByteString y, PersistByteStr
         with (stmtQuery stmt
                      [ PersistText $ unDBName tname
                      , PersistText $ unDBName ref
-                     ]) ($$ do
+                     ]) (`connect` do
             m <- CL.head
 
             return $ case m of
@@ -344,7 +345,7 @@ findAlters defs tablename col@(Column name isNull sqltype def _defConstraintName
              in (modRef ++ modDef ++ modNull ++ modType,
                  filter (\c -> cName c /= name) cols)
 
-cmpdef::Maybe Text -> Maybe Text -> Bool
+cmpdef :: Maybe Text -> Maybe Text -> Bool
 cmpdef Nothing Nothing = True
 cmpdef (Just def) (Just def') | def==def' = True
                               | otherwise =
@@ -401,7 +402,7 @@ showAlterDb (AddTable s) = (False, pack s)
 showAlterDb (AlterColumn t (c, ac)) =
     (isUnsafe ac, pack $ showAlter t (c, ac))
   where
-    isUnsafe (Drop safeToRemove) = not safeToRemove
+    isUnsafe (Drop safeToRem) = not safeToRem
     isUnsafe _ = False
 showAlterDb (AlterTable t at) = (False, pack $ showAlterTable t at)
 

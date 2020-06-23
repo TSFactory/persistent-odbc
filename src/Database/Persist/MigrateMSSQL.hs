@@ -1,3 +1,4 @@
+{-# OPTIONS -Wall #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -10,7 +11,7 @@ module Database.Persist.MigrateMSSQL
 import Control.Arrow
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.Error (ErrorT(..))
+import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.Resource (runResourceT)
 import Data.ByteString (ByteString)
 import Data.Either (partitionEithers)
@@ -19,7 +20,7 @@ import Data.List (find, intercalate, sort, groupBy)
 import Data.Text (Text, pack)
 import Data.Monoid ((<>), mconcat)
 
-import Data.Conduit
+import Data.Conduit (connect, (.|))
 import qualified Data.Conduit.List as CL
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -30,10 +31,10 @@ import Data.Acquire (with)
 
 #if DEBUG
 import Debug.Trace
-tracex::String -> a -> a
+tracex :: String -> a -> a
 tracex = trace
 #else
-tracex::String -> a -> a
+tracex :: String -> a -> a
 tracex _ b = b
 #endif
 
@@ -173,8 +174,8 @@ getColumns getter def = do
       ,"FROM INFORMATION_SCHEMA.COLUMNS "
       ,"WHERE TABLE_NAME   = ? "
       ,"AND COLUMN_NAME  = ?"]
-    inter1 <- with (stmtQuery stmtIdClmn vals) ($$ CL.consume)
-    ids <- runResourceT $ CL.sourceList inter1 $$ helperClmns -- avoid nested queries
+    inter1 <- with (stmtQuery stmtIdClmn vals) (`connect` CL.consume)
+    ids <- runResourceT $ CL.sourceList inter1 `connect` helperClmns -- avoid nested queries
 
     -- Find out all columns.
     let sql=mconcat [
@@ -193,8 +194,8 @@ getColumns getter def = do
                     ]
     --liftIO $ putStrLn $ "sql=" ++ show sql
     stmtClmns <- getter sql
-    inter2 <- with (stmtQuery stmtClmns vals) ($$ CL.consume)
-    cs <- runResourceT $ CL.sourceList inter2 $$ helperClmns -- avoid nested queries
+    inter2 <- with (stmtQuery stmtClmns vals) (`connect` CL.consume)
+    cs <- runResourceT $ CL.sourceList inter2 `connect` helperClmns -- avoid nested queries
 
     -- Find out the constraints.
     stmtCntrs <- getter $ mconcat $
@@ -207,7 +208,7 @@ getColumns getter def = do
       ,"AND not exists (select 1 from INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS AS RC where rc.CONSTRAINT_NAME=p.CONSTRAINT_NAME) "
       ,"ORDER BY CONSTRAINT_NAME, "
       ,"COLUMN_NAME"]
-    us <- with (stmtQuery stmtCntrs vals) ($$ helperCntrs)
+    us <- with (stmtQuery stmtCntrs vals) (`connect` helperCntrs)
     liftIO $ putStrLn $ "\n\ngetColumns cs="++show cs++"\n\nus="++show us
     -- Return both
     return (ids, cs ++ us)
@@ -215,7 +216,7 @@ getColumns getter def = do
     vals = [ PersistText $ unDBName $ entityDB def
            , PersistText $ unDBName $ fieldDB $ entityId def ]
 
-    helperClmns = CL.mapM getIt =$ CL.consume
+    helperClmns = CL.mapM getIt .| CL.consume
         where
           getIt = fmap (either Left (Right . Left)) .
                   liftIO .
@@ -242,7 +243,7 @@ getColumn getter tname [ PersistByteString cname
                                    , default'
                                    , defaultConstraintName'] =
     fmap (either (Left . pack) Right) $
-    runErrorT $ do
+    runExceptT $ do
       -- Default value
       default_ <- case default' of
                     PersistNull   -> return Nothing
@@ -289,7 +290,7 @@ getColumn getter tname [ PersistByteString cname
       let vars = [ PersistText $ unDBName tname
                  , PersistText $ T.decodeUtf8 cname
                  ]
-      cntrs <- with (stmtQuery stmt vars) ($$ CL.consume)
+      cntrs <- liftIO $ with (stmtQuery stmt vars) (`connect` CL.consume)
       ref <- case cntrs of
                [] -> return Nothing
                [[PersistByteString tab, PersistByteString ref, PersistInt64 pos]] ->
@@ -332,6 +333,8 @@ parseType "numeric"    = return SqlReal
 -- Text
 parseType "varchar"    = return SqlString
 parseType "varstring"  = return SqlString
+parseType "nvarchar"    = return SqlString
+parseType "nvarstring"  = return SqlString
 parseType "string"     = return SqlString
 parseType "text"       = return SqlString
 parseType "tinytext"   = return SqlString
@@ -425,7 +428,7 @@ findAlters tblName allDefs col@(Column name isNull type_ def defConstraintName _
             in ( refDrop ++ modType ++ modDef ++ refAdd
                , filter ((name /=) . cName) cols )
 
-cmpdef::Maybe Text -> Maybe Text -> Bool
+cmpdef :: Maybe Text -> Maybe Text -> Bool
 cmpdef Nothing Nothing = True
 cmpdef (Just def) (Just def') = "(" <> def <> ")" == def'
 cmpdef _ _ = False
@@ -636,7 +639,7 @@ upsertSql' ent updateVal = pack $ concat
   ]
 
 
-limitOffset::Bool -> (Int,Int) -> Bool -> Text -> Text
+limitOffset :: Bool -> (Int,Int) -> Bool -> Text -> Text
 limitOffset mssql2012' (limit,offset) hasOrder sql
    | limit==0 && offset==0 = sql
    | mssql2012' && hasOrder && limit==0 = sql <> " offset " <> T.pack (show offset) <> " rows"

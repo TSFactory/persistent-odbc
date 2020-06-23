@@ -1,3 +1,4 @@
+{-# OPTIONS -Wall #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -10,7 +11,7 @@ module Database.Persist.MigrateDB2
 import Control.Arrow
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.Error (ErrorT(..))
+import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.Resource (runResourceT)
 import Data.ByteString (ByteString)
 import Data.Either (partitionEithers)
@@ -18,7 +19,7 @@ import Data.Function (on)
 import Data.List (find, intercalate, sort, groupBy)
 import Data.Text (Text, pack)
 
-import Data.Conduit
+import Data.Conduit (connect, (.|))
 import qualified Data.Conduit.List as CL
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -29,10 +30,10 @@ import Data.Acquire (with)
 
 #if DEBUG
 import Debug.Trace
-tracex::String -> a -> a
+tracex :: String -> a -> a
 tracex = trace
 #else
-tracex::String -> a -> a
+tracex :: String -> a -> a
 tracex _ b = b
 #endif
 
@@ -185,8 +186,8 @@ getColumns getter def = do
                           ,"AND tabname=? "
                           ,"AND colname <> ?"]
 
-    inter1 <- with (stmtQuery stmtIdClmn vals) ($$ CL.consume)
-    ids <- runResourceT $ CL.sourceList inter1 $$ helperClmns -- avoid nested queries
+    inter1 <- with (stmtQuery stmtIdClmn vals) (`connect` CL.consume)
+    ids <- runResourceT $ CL.sourceList inter1 `connect` helperClmns -- avoid nested queries
 
     -- Find out all columns.
     stmtClmns <- getter $ T.concat
@@ -201,8 +202,8 @@ getColumns getter def = do
                           ,"WHERE tabschema=current_schema "
                           ,"AND tabname=? "
                           ,"AND colname <> ?"]
-    inter2 <- with (stmtQuery stmtClmns vals) ($$ CL.consume)
-    cs <- runResourceT $ CL.sourceList inter2 $$ helperClmns -- avoid nested queries
+    inter2 <- with (stmtQuery stmtClmns vals) (`connect` CL.consume)
+    cs <- runResourceT $ CL.sourceList inter2 `connect` helperClmns -- avoid nested queries
 
     -- Find out the constraints.
     stmtCntrs <- getter $ T.concat ["SELECT "
@@ -225,7 +226,7 @@ getColumns getter def = do
                           ,"AND trim(pk_colnames) <> ? "
                           ,"ORDER BY constraint_name, column_name"]
 
-    us <- with (stmtQuery stmtCntrs (vals++vals)) ($$ helperCntrs)
+    us <- with (stmtQuery stmtCntrs (vals++vals)) (`connect` helperCntrs)
     liftIO $ putStrLn $ "\n\ngetColumns cs="++show cs++"\n\nus="++show us
     -- Return both
     return (ids, cs ++ us)
@@ -233,7 +234,7 @@ getColumns getter def = do
     vals = [ PersistText $ unDBName $ entityDB def
            , PersistText $ unDBName $ fieldDB $ entityId def ]
 
-    helperClmns = CL.mapM getIt =$ CL.consume
+    helperClmns = CL.mapM getIt .| CL.consume
         where
           getIt = fmap (either Left (Right . Left)) .
                   liftIO .
@@ -261,7 +262,7 @@ getColumn getter tname [ PersistByteString cname
                                    , npre
                                    , nscl] =
     fmap (either (Left . pack) Right) $
-    runErrorT $ do
+    runExceptT $ do
       -- Default value
       default_ <- case default' of
                     PersistNull   -> return Nothing
@@ -290,7 +291,7 @@ getColumn getter tname [ PersistByteString cname
       let vars = [ PersistText $ unDBName tname
                  , PersistByteString cname
                  ]
-      cntrs <- with (stmtQuery stmt vars) ($$ CL.consume)
+      cntrs <- liftIO $ with (stmtQuery stmt vars) (`connect` CL.consume)
       ref <- case cntrs of
                [] -> return Nothing
                [[PersistByteString tab, PersistByteString ref, PersistInt64 pos]] ->
@@ -410,7 +411,7 @@ findAlters tblName allDefs col@(Column name isNull type_ def _defConstraintName 
                , filter ((name /=) . cName) cols )
 
 
-cmpdef::Maybe Text -> Maybe Text -> Bool
+cmpdef :: Maybe Text -> Maybe Text -> Bool
 cmpdef Nothing Nothing = True
 cmpdef (Just def) (Just def') | def==def' = True
                               | otherwise =

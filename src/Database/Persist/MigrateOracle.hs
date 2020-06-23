@@ -1,3 +1,4 @@
+{-# OPTIONS -Wall #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -10,7 +11,7 @@ module Database.Persist.MigrateOracle
 import Control.Arrow
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.Error (ErrorT(..))
+import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.Resource (runResourceT)
 import Data.ByteString (ByteString)
 import Data.Either (partitionEithers)
@@ -18,7 +19,7 @@ import Data.Function (on)
 import Data.List (find, intercalate, sort, groupBy)
 import Data.Text (Text, pack)
 
-import Data.Conduit
+import Data.Conduit (connect, (.|))
 import qualified Data.Conduit.List as CL
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -29,10 +30,10 @@ import Data.Acquire (with)
 
 #if DEBUG
 import Debug.Trace
-tracex::String -> a -> a
+tracex :: String -> a -> a
 tracex = trace
 #else
-tracex::String -> a -> a
+tracex :: String -> a -> a
 tracex _ b = b
 #endif
 
@@ -174,14 +175,14 @@ getColumns getter def = do
                          ,"FROM user_tab_cols "
                          ,"WHERE TABLE_NAME   = ? "
                          ,"AND COLUMN_NAME  = ?"]
-    inter1 <- with (stmtQuery stmtIdClmn vals) ($$ CL.consume)
-    ids <- runResourceT $ CL.sourceList inter1 $$ helperClmns -- avoid nested queries
+    inter1 <- with (stmtQuery stmtIdClmn vals) (`connect` CL.consume)
+    ids <- runResourceT $ CL.sourceList inter1 `connect` helperClmns -- avoid nested queries
 
     -- Find if sequence already exists.
     stmtSeq <- getter $ T.concat ["SELECT sequence_name "
                           ,"FROM user_sequences "
                           ,"WHERE sequence_name   = ?"]
-    seqlist <- with (stmtQuery stmtSeq [PersistText $ getSeqNameUnescaped $ entityDB def]) ($$ CL.consume)
+    seqlist <- with (stmtQuery stmtSeq [PersistText $ getSeqNameUnescaped $ entityDB def]) (`connect` CL.consume)
     --liftIO $ putStrLn $ "seqlist=" ++ show seqlist
 
     -- Find out all columns.
@@ -192,8 +193,8 @@ getColumns getter def = do
                         ,"FROM user_tab_cols "
                           ,"WHERE TABLE_NAME   = ? "
                           ,"AND COLUMN_NAME <> ?"]
-    inter2 <- with (stmtQuery stmtClmns vals) ($$ CL.consume)
-    cs <- runResourceT $ CL.sourceList inter2 $$ helperClmns -- avoid nested queries
+    inter2 <- liftIO $ with (stmtQuery stmtClmns vals) (`connect` CL.consume)
+    cs <- runResourceT $ CL.sourceList inter2 `connect` helperClmns -- avoid nested queries
 
     -- Find out the constraints.
 
@@ -208,7 +209,7 @@ getColumns getter def = do
       ,"AND a.COLUMN_NAME <> ? "
       ,"ORDER BY b.CONSTRAINT_NAME, "
       ,"a.COLUMN_NAME"]
-    us <- with (stmtQuery stmtCntrs vals) ($$ helperCntrs)
+    us <- with (stmtQuery stmtCntrs vals) (`connect` helperCntrs)
 
     -- Return both
     return (ids, cs ++ us, listAsMaybe seqlist)
@@ -220,7 +221,7 @@ getColumns getter def = do
     vals = [ PersistText $ unDBName $ entityDB def
            , PersistText $ unDBName $ fieldDB $ entityId def ]
 
-    helperClmns = CL.mapM getIt =$ CL.consume
+    helperClmns = CL.mapM getIt .| CL.consume
         where
           getIt = fmap (either Left (Right . Left)) .
                   liftIO .
@@ -246,7 +247,7 @@ getColumn getter tname [ PersistByteString cname
                                    , PersistByteString type'
                                    , default'] =
     fmap (either (Left . pack) Right) $
-    runErrorT $ do
+    runExceptT $ do
       -- Default value
       default_ <- case default' of
                     PersistNull   -> return Nothing
@@ -285,7 +286,7 @@ getColumn getter tname [ PersistByteString cname
       let vars = [ PersistText $ unDBName tname
                  , PersistByteString cname
                  ]
-      cntrs <- with (stmtQuery stmt vars) ($$ CL.consume)
+      cntrs <- liftIO $ with (stmtQuery stmt vars) (`connect` CL.consume)
       ref <- case cntrs of
                [] -> return Nothing
                [[PersistByteString tab, PersistByteString ref]] ->
@@ -423,7 +424,7 @@ findAlters tblName allDefs col@(Column name isNull type_ def _defConstraintName 
                , filter ((name /=) . cName) cols )
 
 
-cmpdef::Maybe Text -> Maybe Text -> Bool
+cmpdef :: Maybe Text -> Maybe Text -> Bool
 --cmpdef Nothing Nothing = True
 cmpdef = (==)
 --cmpdef (Just def) (Just def') = tracex ("def[" ++ show (T.concatMap (T.pack . show . ord) def) ++ "] def'[" ++ show (T.concatMap (T.pack . show . ord) def') ++ "]") $ def == def'
@@ -641,10 +642,10 @@ insertSql' ent vals =
 getSeqNameEscaped :: DBName -> String
 getSeqNameEscaped d = escapeDBName $ DBName $ getSeqNameUnescaped d
 
-getSeqNameUnescaped::DBName -> Text
+getSeqNameUnescaped :: DBName -> Text
 getSeqNameUnescaped (DBName s) = "seq_" <> s <> "_id"
 
-limitOffset::Bool -> (Int,Int) -> Bool -> Text -> Text
+limitOffset :: Bool -> (Int,Int) -> Bool -> Text -> Text
 limitOffset oracle12c' (limit,offset) hasOrder sql
    | limit==0 && offset==0 = sql
    | oracle12c' && hasOrder && limit==0 = sql <> " offset " <> T.pack (show offset) <> " rows"
